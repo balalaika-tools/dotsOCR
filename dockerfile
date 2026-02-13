@@ -14,11 +14,10 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv lock \
- && uv sync --frozen --no-install-project --no-dev
+    uv sync --frozen --no-install-project --no-dev
 
 COPY src/ ./src/
 
@@ -47,5 +46,5 @@ EXPOSE 8501
 
 ENTRYPOINT ["tini", "--"]
 
-# Streamlit UI
+# Streamlit UI (Streamlit requires a .py file target)
 CMD ["streamlit", "run", "src/dotsOCR/frontend/app.py", "--server.address=0.0.0.0", "--server.port=8501"]

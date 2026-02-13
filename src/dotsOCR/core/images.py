@@ -21,12 +21,24 @@ def load_image_from_bytes(data: bytes) -> Image.Image:
 
 
 def _render_page_to_image(page: fitz.Page, target_dpi: int) -> Image.Image:
-    mat = fitz.Matrix(target_dpi / 72, target_dpi / 72)
-    pm = page.get_pixmap(matrix=mat, alpha=False)
-    # Fallback if too large (avoid huge RAM spikes)
-    if pm.width > 4500 or pm.height > 4500:
-        pm = page.get_pixmap(matrix=fitz.Matrix(1, 1), alpha=False)
-    return Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
+    # Try to render close to target DPI, but avoid huge pixmaps that can spike RAM.
+    # Instead of falling back straight to 72dpi, progressively reduce DPI.
+    dpi = int(target_dpi)
+    min_dpi = 96
+    max_side = 4500
+
+    while True:
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pm = page.get_pixmap(matrix=mat, alpha=False)
+        if pm.width <= max_side and pm.height <= max_side:
+            return Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
+
+        if dpi <= min_dpi:
+            # Final fallback: accept the smaller render to avoid OOM.
+            return Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
+
+        # Reduce DPI and retry.
+        dpi = max(min_dpi, int(dpi * 0.8))
 
 
 def load_pdf_pages_from_bytes(

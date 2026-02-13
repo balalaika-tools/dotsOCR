@@ -113,6 +113,25 @@ def fix_streamlit_formulas(md: str) -> str:
     return re.sub(r"\$\$(.*?)\$\$", replace_formula, md, flags=re.DOTALL)
 
 
+_BASE64_IMAGE_RE = re.compile(
+    r"!\[[^\]]*\]\(data:image\/[a-zA-Z0-9.+-]+;base64,[^)]+\)",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_base64_images_from_markdown(md: str) -> str:
+    """
+    Remove embedded base64 images like:
+    ![](data:image/png;base64,....)
+    """
+    if not md:
+        return ""
+    out = _BASE64_IMAGE_RE.sub("", md)
+    # Cleanup: collapse excessive blank lines created by removals.
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out + ("\n" if out else "")
+
+
 def _strip_code_fences(text: str) -> str:
     t = (text or "").strip()
     if t.startswith("```"):
@@ -134,7 +153,25 @@ def extract_json_candidate(text: str) -> str:
 
 
 def parse_json_from_response(response_text: str) -> Any:
-    """Parse the first JSON object/array found in the response text."""
+    """
+    Parse JSON from a model response.
+
+    Some model outputs contain multiple top-level JSON values concatenated
+    (e.g. `[...] [...]`). In that case, we merge list values into one list.
+    """
+    candidate = _strip_code_fences(response_text)
+    values = _extract_top_level_json_values(candidate)
+    if values:
+        if len(values) == 1:
+            return json.loads(values[0])
+        parsed = [json.loads(v) for v in values]
+        if all(isinstance(x, list) for x in parsed):
+            merged: list[Any] = []
+            for x in parsed:
+                merged.extend(x)
+            return merged
+        return parsed
+
     candidate = _extract_json_candidate(response_text)
     return json.loads(candidate)
 
@@ -146,8 +183,20 @@ def parse_layout_cells_from_response(response_text: str) -> list[dict]:
     - a JSON object containing a list under common keys
     - wrapped in ```json fences
     """
-    candidate = _extract_json_candidate(response_text)
-    obj: Any = json.loads(candidate)
+    candidate = _strip_code_fences(response_text)
+    values = _extract_top_level_json_values(candidate)
+    if values:
+        parsed = [json.loads(v) for v in values]
+        if all(isinstance(x, list) for x in parsed):
+            merged_cells: list[dict] = []
+            for x in parsed:
+                merged_cells.extend([c for c in x if isinstance(c, dict)])
+            return merged_cells
+        # Fall back to the first parsed value for shape handling below.
+        obj: Any = parsed[0]
+    else:
+        candidate = _extract_json_candidate(response_text)
+        obj = json.loads(candidate)
 
     if isinstance(obj, list):
         return [c for c in obj if isinstance(c, dict)]
@@ -162,6 +211,66 @@ def parse_layout_cells_from_response(response_text: str) -> list[dict]:
             return [obj]
 
     raise ValueError("Unsupported JSON shape for layout cells")
+
+
+def _extract_top_level_json_values(text: str) -> list[str]:
+    """
+    Extract one or more top-level JSON values from a string.
+    This is resilient to outputs like: `[...] [...]` or `{...}\n{...}`.
+    """
+    s = (text or "").strip()
+    out: list[str] = []
+    i = 0
+    n = len(s)
+
+    def _skip_ws(idx: int) -> int:
+        while idx < n and s[idx].isspace():
+            idx += 1
+        return idx
+
+    i = _skip_ws(i)
+    while i < n:
+        if s[i] not in "[{":
+            # Find the next potential JSON start.
+            j = i + 1
+            while j < n and s[j] not in "[{":
+                j += 1
+            i = _skip_ws(j)
+            continue
+
+        start = i
+        stack: list[str] = [s[i]]
+        i += 1
+        in_str = False
+        esc = False
+
+        while i < n and stack:
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch in "[{":
+                    stack.append(ch)
+                elif ch == "]":
+                    if stack and stack[-1] == "[":
+                        stack.pop()
+                elif ch == "}":
+                    if stack and stack[-1] == "{":
+                        stack.pop()
+            i += 1
+
+        if not stack:
+            out.append(s[start:i].strip())
+        i = _skip_ws(i)
+
+    return out
 
 
 def response_to_markdown(*, prompt_mode: str, image: Image.Image, response_text: str) -> str | None:
