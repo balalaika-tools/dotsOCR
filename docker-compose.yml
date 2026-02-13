@@ -1,0 +1,51 @@
+services:
+  vllm:
+    image: "vllm/vllm-openai:${VLLM_IMAGE_TAG:-latest}"
+    container_name: dotsocr-vllm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    shm_size: "${VLLM_SHM_SIZE:-4gb}"
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    volumes:
+      - "${HF_CACHE_HOST_PATH:-./.hf_cache}:/root/.cache/huggingface"
+    environment:
+      HF_HOME: "/root/.cache/huggingface"
+      HF_TOKEN: "${HF_TOKEN}"
+    command:
+      - "${VLLM_MODEL:-rednote-hilab/dots.ocr}"
+      - "--trust-remote-code"
+      - "--served-model-name"
+      - "${VLLM_SERVED_MODEL_NAME:-dotsOCR}"
+      - "--tensor-parallel-size"
+      - "${VLLM_TENSOR_PARALLEL_SIZE:-1}"
+      - "--gpu-memory-utilization"
+      - "${VLLM_GPU_MEMORY_UTILIZATION:-0.89}"
+      - "--max-model-len"
+      - "${VLLM_MAX_MODEL_LEN:-12000}"
+      - "--async-scheduling"
+      - "--chat-template-content-format"
+      - "string"
+    restart: unless-stopped
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: dotsocr-frontend
+    depends_on:
+      - vllm
+    ports:
+      - "${FRONTEND_PORT:-8501}:8501"
+    environment:
+      VLLM_BASE_URL: "http://vllm:8000/v1"
+      VLLM_MODEL_NAME: "${VLLM_SERVED_MODEL_NAME:-dotsOCR}"
+      FRONTEND_TITLE: "${FRONTEND_TITLE:-DotsOCR}"
+      VLLM_API_KEY: "${VLLM_API_KEY:-0}"
+      VLLM_MAX_MODEL_LEN: "${VLLM_MAX_MODEL_LEN:-12000}"
+    restart: unless-stopped
