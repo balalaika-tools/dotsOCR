@@ -9,6 +9,8 @@ from openai import AsyncOpenAI, BadRequestError
 from .images import PageImage
 from .vllm import VllmConfig, build_async_client, build_vision_messages
 
+PROBE_TIMEOUT_SECONDS = 45.0
+
 
 @dataclass(frozen=True)
 class PageResult:
@@ -98,7 +100,14 @@ async def infer_pages_batched(
 
     async def _probe_one(p: PageImage) -> tuple[int, int]:
         async with sem:
-            pt = await _probe_prompt_tokens(client, cfg=cfg, page=p, prompt=prompt)
+            try:
+                pt = await asyncio.wait_for(
+                    _probe_prompt_tokens(client, cfg=cfg, page=p, prompt=prompt),
+                    timeout=PROBE_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                # Fallback if token probe is slow/hung on large pages.
+                pt = max(1, int(cfg.max_model_len * 0.25))
             return p.page_index, pt
 
     # Phase 1: probe prompt tokens (no 400s).

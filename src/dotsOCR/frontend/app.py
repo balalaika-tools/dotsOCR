@@ -4,7 +4,14 @@ from io import BytesIO
 
 import streamlit as st
 
-from dotsOCR.core.images import PageImage, load_image_from_bytes, load_pdf_pages_from_bytes
+from dotsOCR.core.images import (
+    INFERENCE_MAX_IMAGE_SIDE,
+    PageImage,
+    load_image_from_bytes,
+    load_pdf_pages_from_bytes,
+    resize_for_model,
+    resize_to_max_side,
+)
 from dotsOCR.core.prompts_legacy import dict_promptmode_to_prompt
 from dotsOCR.core.batching import join_results
 from dotsOCR.core.vllm import VllmConfig
@@ -151,7 +158,10 @@ def main() -> None:
     if kind == "pdf":
         pages = load_pdf_pages_from_bytes(file_bytes, target_dpi=controls["target_dpi"], max_pages=controls["max_pages"])
     else:
-        pages = [PageImage(page_index=0, image=load_image_from_bytes(file_bytes))]
+        img = load_image_from_bytes(file_bytes)
+        img = resize_to_max_side(img, INFERENCE_MAX_IMAGE_SIDE)
+        img = resize_for_model(img)
+        pages = [PageImage(page_index=0, image=img)]
 
     vllm_cfg = VllmConfig(
         base_url=cfg.vllm_base_url,
@@ -193,13 +203,9 @@ def main() -> None:
         "json_pages": json_pages,
         "combined_text": combined_text,
     }
-    render_outputs(
-        prompt_mode=prompt_mode,
-        per_page=per_page,
-        md_pages=md_pages,
-        json_pages=json_pages,
-        combined_text=combined_text,
-    )
+    # Trigger a rerun so widgets are rebuilt with running=False.
+    # Without this, controls stay visually disabled until the next user interaction.
+    st.rerun()
 
 
 if __name__ == "__main__":

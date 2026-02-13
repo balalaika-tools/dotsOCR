@@ -23,13 +23,16 @@ def run_inference_with_progress(
     progress_state = {"last_completed": 0, "total": None}
 
     def _progress_update(phase: str, completed: int, total: int, last_page_index: int) -> None:
-        if phase != "inference":
+        total_safe = max(int(total), 1)
+        completed_i = int(completed)
+
+        if phase == "planning":
+            # Show planning progress so user knows we're not stuck (probes hit vLLM queue).
+            progress.progress(0, text=f"Preparing... {completed_i}/{total_safe} pages")
             return
 
-        total_safe = max(int(total), 1)
+        # inference phase
         progress_state["total"] = total_safe
-
-        completed_i = int(completed)
         if completed_i <= int(progress_state["last_completed"]):
             return
         progress_state["last_completed"] = completed_i

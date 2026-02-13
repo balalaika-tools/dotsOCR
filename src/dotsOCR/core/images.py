@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 from dataclasses import dataclass
 from typing import Iterable
 
 import fitz  # PyMuPDF
 from PIL import Image
+
+INFERENCE_MAX_IMAGE_SIDE = 2048
+IMAGE_FACTOR = 28
+MIN_PIXELS = 3136
+MAX_PIXELS = INFERENCE_MAX_IMAGE_SIDE * INFERENCE_MAX_IMAGE_SIDE
 
 
 @dataclass(frozen=True)
@@ -15,9 +21,89 @@ class PageImage:
     image: Image.Image
 
 
+def _to_rgb(img: Image.Image) -> Image.Image:
+    # Preserve readability for transparent images by compositing on white.
+    if img.mode == "RGBA":
+        white = Image.new("RGB", img.size, (255, 255, 255))
+        white.paste(img, mask=img.split()[3])
+        return white
+    return img.convert("RGB")
+
+
 def load_image_from_bytes(data: bytes) -> Image.Image:
     img = Image.open(io.BytesIO(data))
-    return img.convert("RGB")
+    return _to_rgb(img)
+
+
+def resize_to_max_side(img: Image.Image, max_side: int) -> Image.Image:
+    """Downscale image so its longest side is <= max_side."""
+    max_side_i = max(1, int(max_side))
+    w, h = img.size
+    longest = max(w, h)
+    if longest <= max_side_i:
+        return img
+    ratio = max_side_i / float(longest)
+    new_w = max(1, int(round(w * ratio)))
+    new_h = max(1, int(round(h * ratio)))
+    return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+
+def _round_by_factor(number: int, factor: int) -> int:
+    return round(number / factor) * factor
+
+
+def _ceil_by_factor(number: int, factor: int) -> int:
+    return math.ceil(number / factor) * factor
+
+
+def _floor_by_factor(number: int, factor: int) -> int:
+    return math.floor(number / factor) * factor
+
+
+def smart_resize(
+    *,
+    height: int,
+    width: int,
+    factor: int = IMAGE_FACTOR,
+    min_pixels: int = MIN_PIXELS,
+    max_pixels: int = MAX_PIXELS,
+) -> tuple[int, int]:
+    """
+    Keep aspect ratio and force dimensions to a model-friendly grid (factor).
+    """
+    if min(height, width) <= 0:
+        raise ValueError(f"Invalid image size: width={width}, height={height}")
+    if max(height, width) / min(height, width) > 200:
+        raise ValueError("absolute aspect ratio must be smaller than 200")
+
+    h_bar = max(factor, _round_by_factor(height, factor))
+    w_bar = max(factor, _round_by_factor(width, factor))
+
+    if h_bar * w_bar > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        h_bar = max(factor, _floor_by_factor(height / beta, factor))
+        w_bar = max(factor, _floor_by_factor(width / beta, factor))
+    elif h_bar * w_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        h_bar = _ceil_by_factor(height * beta, factor)
+        w_bar = _ceil_by_factor(width * beta, factor)
+        if h_bar * w_bar > max_pixels:
+            beta = math.sqrt((h_bar * w_bar) / max_pixels)
+            h_bar = max(factor, _floor_by_factor(h_bar / beta, factor))
+            w_bar = max(factor, _floor_by_factor(w_bar / beta, factor))
+
+    return int(h_bar), int(w_bar)
+
+
+def resize_for_model(img: Image.Image) -> Image.Image:
+    """
+    Apply model-aware resize constraints (factor grid + min/max pixels).
+    """
+    h, w = img.height, img.width
+    new_h, new_w = smart_resize(height=h, width=w, factor=IMAGE_FACTOR, min_pixels=MIN_PIXELS, max_pixels=MAX_PIXELS)
+    if new_h == h and new_w == w:
+        return img
+    return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
 
 def _render_page_to_image(page: fitz.Page, target_dpi: int) -> Image.Image:
@@ -54,6 +140,7 @@ def load_pdf_pages_from_bytes(
     *,
     target_dpi: int = 200,
     max_pages: int | None = None,
+    max_side: int = INFERENCE_MAX_IMAGE_SIDE,
 ) -> list[PageImage]:
     doc = fitz.open(stream=data, filetype="pdf")
     try:
@@ -62,7 +149,10 @@ def load_pdf_pages_from_bytes(
         out: list[PageImage] = []
         for i in range(limit):
             page = doc.load_page(i)
-            out.append(PageImage(page_index=i, image=_render_page_to_image(page, target_dpi)))
+            img = _render_page_to_image(page, target_dpi)
+            img = resize_to_max_side(img, max_side)
+            img = resize_for_model(img)
+            out.append(PageImage(page_index=i, image=img))
         return out
     finally:
         doc.close()
