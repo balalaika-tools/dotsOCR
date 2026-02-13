@@ -4,7 +4,7 @@ import streamlit as st
 
 
 def sidebar_controls(*, running: bool) -> dict:
-    st.sidebar.header("Inference")
+    st.sidebar.header("OCR")
 
     # Exactly 2 modes, fixed labels.
     label_to_mode = {
@@ -16,7 +16,7 @@ def sidebar_controls(*, running: bool) -> dict:
 
     target_dpi = st.sidebar.slider("PDF render DPI", min_value=96, max_value=300, value=200, step=12, disabled=running)
     max_pages = st.sidebar.number_input("Max pages (0 = all)", min_value=0, max_value=500, value=0, step=1, disabled=running)
-    max_in_flight = st.sidebar.slider("Concurrency (auto-batching)", min_value=1, max_value=32, value=8, disabled=running)
+    max_in_flight = st.sidebar.slider("Concurrency (requests in flight)", min_value=1, max_value=100, value=50, disabled=running)
 
     return {
         "selected_mode": selected_mode,

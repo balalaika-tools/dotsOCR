@@ -21,23 +21,31 @@ def load_image_from_bytes(data: bytes) -> Image.Image:
 
 
 def _render_page_to_image(page: fitz.Page, target_dpi: int) -> Image.Image:
-    # Try to render close to target DPI, but avoid huge pixmaps that can spike RAM.
-    # Instead of falling back straight to 72dpi, progressively reduce DPI.
+    # For inference we want deterministic rendering at the requested DPI.
+    # We'll only fall back if rendering at that DPI fails (e.g. memory constraints).
     dpi = int(target_dpi)
-    min_dpi = 96
-    max_side = 4500
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    try:
+        pm = page.get_pixmap(matrix=mat, alpha=False)
+        return Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
+    except (MemoryError, RuntimeError):
+        # Fallback: progressively reduce DPI to avoid crashes.
+        return _render_page_to_image_capped(page, target_dpi=dpi, max_side=4500, min_dpi=96)
 
+
+def _render_page_to_image_capped(page: fitz.Page, *, target_dpi: int, max_side: int = 4500, min_dpi: int = 96) -> Image.Image:
+    """
+    Render a PDF page while capping output dimensions to avoid huge RAM spikes.
+    Used as a safety fallback (and for previews).
+    """
+    dpi = int(target_dpi)
     while True:
         mat = fitz.Matrix(dpi / 72, dpi / 72)
         pm = page.get_pixmap(matrix=mat, alpha=False)
         if pm.width <= max_side and pm.height <= max_side:
             return Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
-
         if dpi <= min_dpi:
-            # Final fallback: accept the smaller render to avoid OOM.
             return Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
-
-        # Reduce DPI and retry.
         dpi = max(min_dpi, int(dpi * 0.8))
 
 
@@ -73,7 +81,8 @@ def render_pdf_page_from_bytes(data: bytes, *, page_index: int, target_dpi: int 
     try:
         page_index = max(0, min(int(page_index), doc.page_count - 1))
         page = doc.load_page(page_index)
-        return _render_page_to_image(page, target_dpi)
+        # Preview path: keep it safe to avoid huge UI renders.
+        return _render_page_to_image_capped(page, target_dpi=int(target_dpi), max_side=4500, min_dpi=96)
     finally:
         doc.close()
 

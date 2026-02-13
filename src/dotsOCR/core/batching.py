@@ -84,7 +84,7 @@ async def infer_pages_batched(
     *,
     cfg: VllmConfig,
     prompt: str,
-    max_in_flight: int = 8,
+    max_in_flight: int = 50,
     progress_callback: Callable[[str, int, int, int], None] | None = None,
 ) -> list[PageResult]:
     """
